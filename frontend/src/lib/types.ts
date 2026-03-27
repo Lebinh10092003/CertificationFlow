@@ -168,6 +168,7 @@ export type CertificatePage = {
   source_batch: number;
   page_number: number;
   split_pdf_url: string;
+  download_pdf_url: string;
   preview_image_url: string;
   output_filename: string;
   processing_status: string;
@@ -212,6 +213,7 @@ export type PublicCertificate = {
   public_slug: string;
   public_url: string;
   split_pdf_url: string;
+  download_pdf_url: string;
   student_name: string;
   school_name: string;
   grade: string;

@@ -646,12 +646,21 @@ class CertificateDeliveryTests(TestCase):
         self.assertEqual(payload["student_name"], "Nguyen Hoang Bach")
         self.assertEqual(payload["competition_code"], "ICO")
         self.assertEqual(payload["grade"], "3")
+        self.assertTrue(payload["download_pdf_url"].endswith(f"/api/certificate-pages/{self.page.id}/pdf/?download=1"))
 
     def test_certificate_page_pdf_endpoint_uses_output_filename(self):
         response = self.client.get(f"/api/certificate-pages/{self.page.id}/pdf/")
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response["Content-Type"], "application/pdf")
+        self.assertIn('filename="nguyen-hoang-bach-bronze-ico.pdf"', response["Content-Disposition"])
+
+    def test_certificate_page_pdf_endpoint_supports_download_attachment(self):
+        response = self.client.get(f"/api/certificate-pages/{self.page.id}/pdf/?download=1")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response["Content-Type"], "application/pdf")
+        self.assertIn("attachment;", response["Content-Disposition"])
         self.assertIn('filename="nguyen-hoang-bach-bronze-ico.pdf"', response["Content-Disposition"])
 
     def test_certificate_pages_serializer_returns_pdf_endpoint_url(self):
@@ -662,6 +671,7 @@ class CertificateDeliveryTests(TestCase):
         self.assertEqual(response.status_code, 200)
         payload = response.json()[0]
         self.assertTrue(payload["split_pdf_url"].endswith(f"/api/certificate-pages/{self.page.id}/pdf/"))
+        self.assertTrue(payload["download_pdf_url"].endswith(f"/api/certificate-pages/{self.page.id}/pdf/?download=1"))
 
     def test_public_certificate_endpoint_hides_unapproved_pages(self):
         ensure_public_identity(self.page)

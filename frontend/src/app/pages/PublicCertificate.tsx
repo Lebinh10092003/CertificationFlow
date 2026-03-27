@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Award, FileText, GraduationCap } from "lucide-react";
+import { Award, Download, FileText, GraduationCap } from "lucide-react";
 import { Link, useParams } from "react-router";
 
 import { api } from "../../lib/api";
@@ -80,12 +80,20 @@ export function PublicCertificate() {
                 </div>
               </div>
 
-              <div className="mt-8 flex flex-wrap gap-3">
+              <div className="mt-8 flex flex-col gap-3 sm:flex-row sm:flex-wrap">
                 {certificate.split_pdf_url ? (
-                  <Button asChild className="gap-2">
+                  <Button asChild className="w-full gap-2 sm:w-auto">
                     <a href={certificate.split_pdf_url} target="_blank" rel="noreferrer">
                       <FileText className="h-4 w-4" />
                       Open certificate PDF
+                    </a>
+                  </Button>
+                ) : null}
+                {certificate.download_pdf_url ? (
+                  <Button asChild variant="outline" className="w-full gap-2 sm:w-auto">
+                    <a href={certificate.download_pdf_url} rel="noreferrer">
+                      <Download className="h-4 w-4" />
+                      Download certificate PDF
                     </a>
                   </Button>
                 ) : null}

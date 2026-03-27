@@ -276,10 +276,11 @@ class CertificatePagePdfView(APIView):
             return Response({"detail": "Split PDF is not available"}, status=status.HTTP_404_NOT_FOUND)
 
         filename = page.output_filename or page.split_pdf_file.name.rsplit("/", 1)[-1]
+        download = str(request.query_params.get("download", "")).lower() in {"1", "true", "yes"}
         response = FileResponse(
             page.split_pdf_file.open("rb"),
             content_type="application/pdf",
-            as_attachment=False,
+            as_attachment=download,
             filename=filename,
         )
         response["X-Content-Type-Options"] = "nosniff"

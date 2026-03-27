@@ -119,6 +119,7 @@ class CertificatePageSerializer(serializers.ModelSerializer):
     match = CertificateMatchSerializer(read_only=True)
     preview_image_url = serializers.SerializerMethodField()
     split_pdf_url = serializers.SerializerMethodField()
+    download_pdf_url = serializers.SerializerMethodField()
     public_url = serializers.SerializerMethodField()
     review_status = serializers.SerializerMethodField()
     export_ready = serializers.SerializerMethodField()
@@ -130,6 +131,7 @@ class CertificatePageSerializer(serializers.ModelSerializer):
             "source_batch",
             "page_number",
             "split_pdf_url",
+            "download_pdf_url",
             "preview_image_url",
             "output_filename",
             "processing_status",
@@ -156,6 +158,13 @@ class CertificatePageSerializer(serializers.ModelSerializer):
             return ""
         request = self.context.get("request")
         path = reverse("certificate-page-pdf", args=[obj.pk])
+        return request.build_absolute_uri(path) if request else path
+
+    def get_download_pdf_url(self, obj):
+        if not obj.split_pdf_file:
+            return ""
+        request = self.context.get("request")
+        path = f'{reverse("certificate-page-pdf", args=[obj.pk])}?download=1'
         return request.build_absolute_uri(path) if request else path
 
     def get_public_url(self, obj):
@@ -187,6 +196,7 @@ class CertificatePageSerializer(serializers.ModelSerializer):
 
 class PublicCertificateSerializer(serializers.ModelSerializer):
     split_pdf_url = serializers.SerializerMethodField()
+    download_pdf_url = serializers.SerializerMethodField()
     public_url = serializers.SerializerMethodField()
     competition = serializers.SerializerMethodField()
     student_name = serializers.SerializerMethodField()
@@ -207,6 +217,7 @@ class PublicCertificateSerializer(serializers.ModelSerializer):
             "public_slug",
             "public_url",
             "split_pdf_url",
+            "download_pdf_url",
             "student_name",
             "school_name",
             "grade",
@@ -229,6 +240,13 @@ class PublicCertificateSerializer(serializers.ModelSerializer):
             return ""
         request = self.context.get("request")
         path = reverse("certificate-page-pdf", args=[obj.pk])
+        return request.build_absolute_uri(path) if request else path
+
+    def get_download_pdf_url(self, obj):
+        if not obj.split_pdf_file:
+            return ""
+        request = self.context.get("request")
+        path = f'{reverse("certificate-page-pdf", args=[obj.pk])}?download=1'
         return request.build_absolute_uri(path) if request else path
 
     def get_public_url(self, obj):
