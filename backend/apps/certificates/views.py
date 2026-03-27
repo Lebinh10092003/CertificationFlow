@@ -5,6 +5,7 @@ from django.http import FileResponse, HttpResponse
 from django.core.exceptions import ValidationError
 from django.utils import timezone
 from rest_framework import generics, status
+from rest_framework.permissions import AllowAny
 from rest_framework.parsers import FormParser, MultiPartParser
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -270,6 +271,8 @@ class CertificatePageListView(generics.ListAPIView):
 
 
 class CertificatePagePdfView(APIView):
+    permission_classes = [AllowAny]
+
     def get(self, request, page_id: int):
         page = get_object_or_404(CertificatePage, pk=page_id)
         if not page.split_pdf_file:
@@ -395,6 +398,7 @@ class CertificateMatchBulkReviewView(APIView):
 class PublicCertificateDetailView(generics.RetrieveAPIView):
     lookup_field = "public_slug"
     serializer_class = PublicCertificateSerializer
+    permission_classes = [AllowAny]
     queryset = CertificatePage.objects.select_related(
         "source_batch",
         "source_batch__competition",

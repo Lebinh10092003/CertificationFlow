@@ -7,7 +7,7 @@ import {
   type PropsWithChildren,
 } from "react";
 
-import { api } from "../../lib/api";
+import { api, isUnauthorizedError } from "../../lib/api";
 import type { Competition } from "../../lib/types";
 
 type AppDataContextValue = {
@@ -44,6 +44,14 @@ export function AppDataProvider({ children }: PropsWithChildren) {
         window.localStorage.setItem(STORAGE_KEY, String(next));
         return next;
       });
+    } catch (error) {
+      if (isUnauthorizedError(error)) {
+        setCompetitions([]);
+        setSelectedCompetitionIdState(null);
+        window.localStorage.removeItem(STORAGE_KEY);
+        return;
+      }
+      throw error;
     } finally {
       setLoading(false);
     }

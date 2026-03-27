@@ -1,5 +1,5 @@
 import { createBrowserRouter } from "react-router";
-import { RootLayout } from "./components/layout/RootLayout";
+import { ProtectedApp } from "./components/auth/ProtectedApp";
 import { RouteErrorBoundary } from "./components/layout/RouteErrorBoundary";
 import { Dashboard } from "./pages/Dashboard";
 import { Competitions } from "./pages/Competitions";
@@ -11,6 +11,7 @@ import { EmailCampaigns } from "./pages/EmailCampaigns";
 import { Logs } from "./pages/Logs";
 import { PublicCertificate } from "./pages/PublicCertificate";
 import { Settings } from "./pages/Settings";
+import { Login } from "./pages/Login";
 
 export const router = createBrowserRouter([
   {
@@ -19,8 +20,13 @@ export const router = createBrowserRouter([
     ErrorBoundary: RouteErrorBoundary,
   },
   {
+    path: "/login",
+    Component: Login,
+    ErrorBoundary: RouteErrorBoundary,
+  },
+  {
     path: "/",
-    Component: RootLayout,
+    Component: ProtectedApp,
     ErrorBoundary: RouteErrorBoundary,
     children: [
       { index: true, Component: Dashboard },

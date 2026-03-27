@@ -29,6 +29,18 @@ export type Competition = {
   integration_config?: IntegrationConfig;
 };
 
+export type AuthenticatedUser = {
+  id: number;
+  username: string;
+  is_staff: boolean;
+  is_superuser: boolean;
+};
+
+export type AuthSession = {
+  authenticated: boolean;
+  user: AuthenticatedUser | null;
+};
+
 export type DashboardSummary = {
   competition: Competition | null;
   stats: {

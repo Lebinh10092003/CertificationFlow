@@ -16,6 +16,7 @@ import {
 } from "lucide-react";
 
 import { useAppData } from "../../contexts/AppDataContext";
+import { useAuth } from "../../contexts/AuthContext";
 import { useLanguage } from "../../contexts/LanguageContext";
 import { Avatar, AvatarFallback } from "../ui/avatar";
 import { Button } from "../ui/button";
@@ -31,6 +32,7 @@ import {
 export function RootLayout() {
   const location = useLocation();
   const { language, setLanguage, t } = useLanguage();
+  const { user, logout } = useAuth();
   const { competitions, selectedCompetition, selectedCompetitionId, setSelectedCompetitionId } = useAppData();
 
   const navItems = [
@@ -82,11 +84,11 @@ export function RootLayout() {
         <div className="border-t border-gray-200 p-4">
           <div className="flex items-center gap-3">
             <Avatar className="h-9 w-9">
-              <AvatarFallback>AD</AvatarFallback>
+              <AvatarFallback>{user?.username?.slice(0, 2).toUpperCase() || "AD"}</AvatarFallback>
             </Avatar>
             <div className="min-w-0 flex-1">
-              <p className="truncate text-sm font-medium text-gray-900">Admin User</p>
-              <p className="truncate text-xs text-gray-500">local session</p>
+              <p className="truncate text-sm font-medium text-gray-900">{user?.username ?? "Admin User"}</p>
+              <p className="truncate text-xs text-gray-500">{user?.username ?? "Django session"}</p>
             </div>
           </div>
         </div>
@@ -154,8 +156,12 @@ export function RootLayout() {
               </Link>
             </Button>
 
+            <Button variant="outline" onClick={() => void logout()}>
+              Logout
+            </Button>
+
             <Avatar className="h-9 w-9">
-              <AvatarFallback>AD</AvatarFallback>
+              <AvatarFallback>{user?.username?.slice(0, 2).toUpperCase() || "AD"}</AvatarFallback>
             </Avatar>
           </div>
         </header>

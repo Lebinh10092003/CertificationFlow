@@ -2,6 +2,7 @@ from io import BytesIO
 from unittest.mock import patch
 
 import fitz
+from django.contrib.auth import get_user_model
 from django.core.files.base import ContentFile
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import TestCase
@@ -183,6 +184,8 @@ class PdfPipelineTests(TestCase):
     def test_upload_batch_attaches_selected_competition(self, mock_delay):
         competition = Competition.objects.create(name="Attached Competition", academic_year="2026-2027")
         client = APIClient()
+        user = get_user_model().objects.create_user(username="uploadtester", password="testpass123")
+        client.force_authenticate(user)
 
         response = client.post(
             "/api/certificate-batches/",
@@ -205,6 +208,8 @@ class PdfPipelineTests(TestCase):
 class CertificateDeliveryTests(TestCase):
     def setUp(self):
         self.client = APIClient()
+        self.user = get_user_model().objects.create_user(username="deliverytester", password="testpass123")
+        self.client.force_authenticate(self.user)
         self.competition = Competition.objects.create(
             name="SCO International Coding Olympiad",
             academic_year="2026-2027",

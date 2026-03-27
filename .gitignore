@@ -21,6 +21,7 @@ htmlcov/
 # Django / local app data
 db.sqlite3
 *.sqlite3
+media/
 backend/media/
 backend/staticfiles/
 *.log

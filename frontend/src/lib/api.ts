@@ -1,4 +1,5 @@
 import type {
+  AuthSession,
   AuditLog,
   CertificatePage,
   Competition,
@@ -16,18 +17,58 @@ import type {
 
 const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL ?? "/api").replace(/\/+$/, "");
 
+export class ApiError extends Error {
+  status: number;
+
+  constructor(status: number, message: string) {
+    super(message);
+    this.status = status;
+  }
+}
+
+export function isUnauthorizedError(error: unknown) {
+  return error instanceof ApiError && error.status === 401;
+}
+
+function getCsrfToken() {
+  const match = document.cookie.match(/(?:^|;\s*)csrftoken=([^;]+)/);
+  return match ? decodeURIComponent(match[1]) : "";
+}
+
+function prepareRequestInit(init?: RequestInit) {
+  const method = (init?.method ?? "GET").toUpperCase();
+  const headers = new Headers(init?.headers);
+  if (!["GET", "HEAD", "OPTIONS", "TRACE"].includes(method)) {
+    const csrfToken = getCsrfToken();
+    if (csrfToken && !headers.has("X-CSRFToken")) {
+      headers.set("X-CSRFToken", csrfToken);
+    }
+  }
+  return {
+    ...init,
+    headers,
+    credentials: "include" as const,
+  };
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(`${API_BASE_URL}${path}`, init);
+  const response = await fetch(`${API_BASE_URL}${path}`, prepareRequestInit(init));
   const contentType = response.headers.get("content-type") ?? "";
   const isJson = contentType.includes("application/json");
 
   if (!response.ok) {
+    let message = `Request failed: ${response.status}`;
     if (isJson) {
       const payload = (await response.json()) as { detail?: string };
-      throw new Error(payload.detail || `Request failed: ${response.status}`);
+      message = payload.detail || message;
+    } else {
+      const text = await response.text();
+      message = text || message;
     }
-    const text = await response.text();
-    throw new Error(text || `Request failed: ${response.status}`);
+    if (response.status === 401) {
+      window.dispatchEvent(new CustomEvent("auth:unauthorized"));
+    }
+    throw new ApiError(response.status, message);
   }
   if (response.status === 204) {
     return undefined as T;
@@ -83,6 +124,15 @@ function submitDownload(path: string, payload?: Record<string, unknown>) {
   form.target = iframeName;
   form.style.display = "none";
 
+  const csrfToken = getCsrfToken();
+  if (csrfToken) {
+    const csrfInput = document.createElement("input");
+    csrfInput.type = "hidden";
+    csrfInput.name = "csrfmiddlewaretoken";
+    csrfInput.value = csrfToken;
+    form.appendChild(csrfInput);
+  }
+
   const payloadInput = document.createElement("input");
   payloadInput.type = "hidden";
   payloadInput.name = "payload_json";
@@ -119,6 +169,19 @@ async function download(path: string, fallbackFilename: string, init?: RequestIn
 }
 
 export const api = {
+  fetchSession: () => request<AuthSession>("/auth/session/"),
+  login: (username: string, password: string) =>
+    request<AuthSession>("/auth/login/", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username, password }),
+    }),
+  logout: () =>
+    request<AuthSession>("/auth/logout/", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({}),
+    }),
   fetchCompetitions: () => request<Competition[]>("/competitions/"),
   createCompetition: (payload: Partial<Competition>) =>
     request<Competition>("/competitions/", {

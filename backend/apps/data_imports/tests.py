@@ -1,5 +1,6 @@
 from io import BytesIO
 
+from django.contrib.auth import get_user_model
 from django.test import TestCase
 from django.core.files.base import ContentFile
 from django.core.files.uploadedfile import SimpleUploadedFile
@@ -106,6 +107,8 @@ def build_dual_subject_workbook_bytes() -> bytes:
 class TabularImportTests(TestCase):
     def setUp(self):
         self.client = APIClient()
+        self.user = get_user_model().objects.create_user(username="tester", password="testpass123")
+        self.client.force_authenticate(self.user)
 
     def test_import_rows_persists_participants_enrollments_and_results(self):
         competition = Competition.objects.create(name="Math Olympiad", academic_year="2025-2026")
