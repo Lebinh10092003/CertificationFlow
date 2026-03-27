@@ -1,3 +1,5 @@
+import json
+
 from django.shortcuts import get_object_or_404
 from django.http import FileResponse, HttpResponse
 from django.core.exceptions import ValidationError
@@ -30,6 +32,16 @@ from .services.exporting import (
     get_batches_export_columns,
 )
 from .tasks import analyze_source_batch_task, process_source_batch_task
+
+
+def _request_payload(request):
+    payload_json = request.data.get("payload_json")
+    if not payload_json:
+        return request.data
+    try:
+        return json.loads(payload_json)
+    except json.JSONDecodeError as error:
+        raise ValidationError("Invalid export payload") from error
 
 
 class SourcePdfBatchListCreateView(generics.ListCreateAPIView):
@@ -139,7 +151,11 @@ class SourcePdfBatchExportView(APIView):
         batch = get_object_or_404(SourcePdfBatch.objects.select_related("competition"), pk=batch_id)
         if not batch_delivery_pages(batch).exists():
             return Response({"detail": "No approved certificate pages are ready for export"}, status=status.HTTP_400_BAD_REQUEST)
-        serializer = BatchExportRequestSerializer(data=request.data)
+        try:
+            payload = _request_payload(request)
+        except ValidationError as error:
+            return Response({"detail": error.message}, status=status.HTTP_400_BAD_REQUEST)
+        serializer = BatchExportRequestSerializer(data=payload)
         serializer.is_valid(raise_exception=True)
         columns = serializer.validated_data["columns"]
         if not columns:
@@ -194,7 +210,11 @@ class CompetitionExportColumnsView(APIView):
 
 class CompetitionExportView(APIView):
     def post(self, request, competition_id: int):
-        serializer = CompetitionExportRequestSerializer(data=request.data)
+        try:
+            payload = _request_payload(request)
+        except ValidationError as error:
+            return Response({"detail": error.message}, status=status.HTTP_400_BAD_REQUEST)
+        serializer = CompetitionExportRequestSerializer(data=payload)
         serializer.is_valid(raise_exception=True)
         try:
             batches = _competition_export_batches(competition_id, serializer.validated_data["batch_ids"])

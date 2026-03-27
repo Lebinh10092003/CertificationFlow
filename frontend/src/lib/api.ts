@@ -64,6 +64,38 @@ function parseFilename(disposition: string | null, fallback: string) {
   return fallback;
 }
 
+function submitDownload(path: string, payload?: Record<string, unknown>) {
+  const iframeName = `download-frame-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  const iframe = document.createElement("iframe");
+  iframe.name = iframeName;
+  iframe.style.display = "none";
+  document.body.appendChild(iframe);
+
+  if (!payload) {
+    iframe.src = `${API_BASE_URL}${path}`;
+    window.setTimeout(() => iframe.remove(), 60_000);
+    return Promise.resolve();
+  }
+
+  const form = document.createElement("form");
+  form.method = "POST";
+  form.action = `${API_BASE_URL}${path}`;
+  form.target = iframeName;
+  form.style.display = "none";
+
+  const payloadInput = document.createElement("input");
+  payloadInput.type = "hidden";
+  payloadInput.name = "payload_json";
+  payloadInput.value = JSON.stringify(payload);
+  form.appendChild(payloadInput);
+
+  document.body.appendChild(form);
+  form.submit();
+  form.remove();
+  window.setTimeout(() => iframe.remove(), 60_000);
+  return Promise.resolve();
+}
+
 async function download(path: string, fallbackFilename: string, init?: RequestInit) {
   const response = await fetch(`${API_BASE_URL}${path}`, init);
   const contentType = response.headers.get("content-type") ?? "";
@@ -155,25 +187,17 @@ export const api = {
       })}`,
     ),
   exportBatch: (batchId: number) =>
-    download(`/certificate-batches/${batchId}/export/`, `batch_${batchId}_delivery.xlsx`),
+    submitDownload(`/certificate-batches/${batchId}/export/`),
   exportConfiguredBatch: (
     batchId: number,
     payload: { columns: ExportColumnOption[]; sheet_mode: string; format_mode: string },
   ) =>
-    download(`/certificate-batches/${batchId}/export/`, `batch_${batchId}_delivery.xlsx`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-    }),
+    submitDownload(`/certificate-batches/${batchId}/export/`, payload),
   exportConfiguredCompetitionBatches: (
     competitionId: number,
     payload: { batch_ids: number[]; columns: ExportColumnOption[]; sheet_mode: string; format_mode: string },
   ) =>
-    download(`/competitions/${competitionId}/certificate-export/`, `competition_${competitionId}_certificates.xlsx`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-    }),
+    submitDownload(`/competitions/${competitionId}/certificate-export/`, payload),
   fetchPages: (competitionId?: number, batchId?: number, batchIds?: number[]) =>
     request<CertificatePage[]>(`/certificate-pages/${buildQuery({
       competition: competitionId,

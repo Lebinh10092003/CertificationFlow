@@ -557,6 +557,23 @@ class CertificateDeliveryTests(TestCase):
         self.assertEqual(sheet["B2"].value, "sco_batch.pdf")
         self.assertEqual(sheet["B3"].value, "sco_batch_2.pdf")
 
+    def test_competition_export_endpoint_accepts_payload_json_form_post(self):
+        ensure_public_identity(self.page)
+
+        response = self.client.post(
+            f"/api/competitions/{self.competition.id}/certificate-export/",
+            {
+                "payload_json": '{"batch_ids":[%d],"columns":[{"key":"public_link","label":"Public Link","source_type":"system"}],"sheet_mode":"single_sheet","format_mode":"business"}'
+                % self.batch.id
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response["Content-Type"],
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+
     def test_approve_endpoint_generates_public_link(self):
         self.page.match.is_approved = False
         self.page.match.requires_review = True
