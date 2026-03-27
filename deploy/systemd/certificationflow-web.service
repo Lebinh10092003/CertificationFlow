@@ -1,0 +1,15 @@
+[Unit]
+Description=CertificationFlow Django Gunicorn
+After=network.target
+
+[Service]
+User=root
+Group=www-data
+WorkingDirectory=/opt/certificationflow/app/backend
+EnvironmentFile=/opt/certificationflow/app/backend/.env
+ExecStart=/opt/certificationflow/venv/bin/gunicorn config.wsgi:application --bind 127.0.0.1:8000 --workers 3 --timeout 180
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

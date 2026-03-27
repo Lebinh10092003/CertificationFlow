@@ -1,0 +1,15 @@
+[Unit]
+Description=CertificationFlow Celery Worker
+After=network.target
+
+[Service]
+User=root
+Group=www-data
+WorkingDirectory=/opt/certificationflow/app/backend
+EnvironmentFile=/opt/certificationflow/app/backend/.env
+ExecStart=/opt/certificationflow/venv/bin/celery -A config worker --loglevel=INFO --pool=solo
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
