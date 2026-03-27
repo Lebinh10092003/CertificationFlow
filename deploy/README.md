@@ -10,6 +10,7 @@ This project is deployed on a Linux VPS with:
 Template files:
 
 - `deploy/nginx/certificationflow.conf`
+- `deploy/nginx/certificationflow-https.conf`
 - `deploy/systemd/certificationflow-web.service`
 - `deploy/systemd/certificationflow-celery.service`
 
