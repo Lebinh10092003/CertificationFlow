@@ -10,7 +10,6 @@ from .services.delivery import ensure_public_identity
 
 class SourcePdfBatchSerializer(serializers.ModelSerializer):
     competition = CompetitionSerializer(read_only=True)
-    page_total = serializers.SerializerMethodField()
     uploaded_file_url = serializers.SerializerMethodField()
 
     class Meta:
@@ -22,7 +21,6 @@ class SourcePdfBatchSerializer(serializers.ModelSerializer):
             "uploaded_file_url",
             "original_filename",
             "page_count",
-            "page_total",
             "inferred_competition_name",
             "confirmed_competition_name",
             "competition_confirmation_status",
@@ -35,7 +33,6 @@ class SourcePdfBatchSerializer(serializers.ModelSerializer):
         ]
         read_only_fields = [
             "page_count",
-            "page_total",
             "inferred_competition_name",
             "confirmed_competition_name",
             "competition_confirmation_status",
@@ -51,8 +48,7 @@ class SourcePdfBatchSerializer(serializers.ModelSerializer):
         request = self.context.get("request")
         return request.build_absolute_uri(obj.uploaded_file.url) if request else obj.uploaded_file.url
 
-    def get_page_total(self, obj):
-        return obj.pages.count()
+
 
 
 class CertificateExtractionSerializer(serializers.ModelSerializer):
@@ -123,6 +119,7 @@ class CertificatePageSerializer(serializers.ModelSerializer):
     public_url = serializers.SerializerMethodField()
     review_status = serializers.SerializerMethodField()
     export_ready = serializers.SerializerMethodField()
+    drive_ready = serializers.SerializerMethodField()
 
     class Meta:
         model = CertificatePage
@@ -141,6 +138,8 @@ class CertificatePageSerializer(serializers.ModelSerializer):
             "review_status",
             "export_ready",
             "email_status",
+            "drive_file_url",
+            "drive_ready",
             "created_at",
             "updated_at",
             "extraction",
@@ -168,6 +167,10 @@ class CertificatePageSerializer(serializers.ModelSerializer):
         return request.build_absolute_uri(path) if request else path
 
     def get_public_url(self, obj):
+        # Only generate public identity for approved and matched pages
+        match = self._match(obj)
+        if not match or not match.is_approved:
+            return obj.public_url or ""
         request = self.context.get("request")
         return ensure_public_identity(obj, request=request).public_url
 
@@ -192,6 +195,10 @@ class CertificatePageSerializer(serializers.ModelSerializer):
     def get_export_ready(self, obj):
         match = self._match(obj)
         return bool(match and match.is_approved and obj.public_url)
+
+    def get_drive_ready(self, obj):
+        match = self._match(obj)
+        return bool(match and match.is_approved and obj.drive_file_url)
 
 
 class PublicCertificateSerializer(serializers.ModelSerializer):

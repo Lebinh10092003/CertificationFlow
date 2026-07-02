@@ -1,14 +1,18 @@
 from __future__ import annotations
 
 import json
+import logging
+import re
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
-from urllib.parse import urlparse
+from urllib.parse import urlparse, parse_qs
 
 from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.db import transaction
 from django.utils import timezone
 from django.utils.text import slugify
+import google.auth
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
@@ -28,6 +32,8 @@ SHEETS_RW_SCOPE = "https://www.googleapis.com/auth/spreadsheets"
 DRIVE_SCOPE = "https://www.googleapis.com/auth/drive"
 PLACEHOLDER_PUBLIC_DOMAINS = {"yourdomain.com", "www.yourdomain.com"}
 
+logger = logging.getLogger(__name__)
+
 
 @dataclass
 class BatchDeliverySummary:
@@ -37,15 +43,40 @@ class BatchDeliverySummary:
 
 
 def _load_service_account_credentials(config: IntegrationConfig, scopes: list[str]):
+    """Load credentials from service account JSON stored in config or settings.
+
+    Returns None if no JSON credentials are configured, in which case callers
+    should fall back to Application Default Credentials.
+    """
     credentials_payload = config.sheets_credentials_json or settings.GOOGLE_SERVICE_ACCOUNT_JSON
     if not credentials_payload:
-        raise ValidationError("Missing Google service account credentials")
+        return None
     credentials_info = json.loads(credentials_payload)
     return service_account.Credentials.from_service_account_info(credentials_info, scopes=scopes)
 
 
 def _build_google_service(config: IntegrationConfig, service_name: str, version: str, scopes: list[str]):
+    """Build a Google API service client.
+
+    Credential resolution order:
+    1. Service account JSON stored in IntegrationConfig or GOOGLE_SERVICE_ACCOUNT_JSON setting.
+    2. Application Default Credentials (ADC) — works automatically when the machine has run
+       ``gcloud auth application-default login`` or is running on Google Cloud infrastructure.
+
+    Using ADC means operators do not need to create a service account JSON key.  They just:
+    - Run ``gcloud auth application-default login`` once on the machine.
+    - Use any Google Drive folder owned by / accessible to their personal Google account.
+    """
     credentials = _load_service_account_credentials(config, scopes)
+    if credentials is None:
+        try:
+            credentials, _ = google.auth.default(scopes=scopes)
+        except google.auth.exceptions.DefaultCredentialsError as exc:
+            raise ValidationError(
+                "Google credentials are not configured. "
+                "Either set GOOGLE_SERVICE_ACCOUNT_JSON in your environment, "
+                "or run: gcloud auth application-default login"
+            ) from exc
     return build(service_name, version, credentials=credentials, cache_discovery=False)
 
 
@@ -103,6 +134,49 @@ def page_competition_code(page: CertificatePage) -> str:
     if page.source_batch.competition and page.source_batch.competition.subject:
         return page.source_batch.competition.subject.strip()
     return ""
+
+
+def parse_drive_folder_id(value: str) -> str:
+    """Parse a Google Drive folder ID from various URL formats or a bare ID.
+
+    Accepted formats:
+        https://drive.google.com/drive/folders/<folder_id>
+        https://drive.google.com/drive/u/0/folders/<folder_id>
+        https://drive.google.com/open?id=<folder_id>
+        <folder_id>  (bare alphanumeric ID)
+
+    Raises ValidationError for empty or unrecognisable input.
+    """
+    if not value or not value.strip():
+        raise ValidationError("Drive folder URL or ID must not be empty")
+
+    stripped = value.strip()
+
+    # Pattern: .../folders/<id>
+    folders_match = re.search(r"/folders/([\w-]+)", stripped)
+    if folders_match:
+        return folders_match.group(1)
+
+    # Pattern: ?id=<id> or &id=<id>
+    parsed_url = urlparse(stripped)
+    if parsed_url.scheme in ("http", "https"):
+        query_params = parse_qs(parsed_url.query)
+        if "id" in query_params and query_params["id"]:
+            return query_params["id"][0]
+        raise ValidationError(
+            "Could not extract a folder ID from the provided Google Drive URL. "
+            "Please use a URL in the format: "
+            "https://drive.google.com/drive/folders/<folder_id>"
+        )
+
+    # Bare ID: only word characters and dashes
+    if re.fullmatch(r"[\w-]+", stripped):
+        return stripped
+
+    raise ValidationError(
+        "Invalid Google Drive folder URL or ID. "
+        "Accepted formats: a folder URL or a bare folder ID."
+    )
 
 
 def _is_placeholder_public_base_url(value: str) -> bool:
@@ -253,37 +327,66 @@ def deliver_batch_to_drive(batch: SourcePdfBatch) -> BatchDeliverySummary:
     if not batch.competition_id:
         raise ValidationError("Batch must be attached to a competition before delivery")
     config = batch.competition.integration_config
-    if not config.drive_folder_id:
-        raise ValidationError("Drive Folder ID is not configured")
 
-    drive = _build_google_service(config, "drive", "v3", [DRIVE_SCOPE])
+    # Parse and persist drive_folder_id from drive_folder_url if needed
+    if config.drive_folder_url:
+        parsed_folder_id = parse_drive_folder_id(config.drive_folder_url)
+        if parsed_folder_id != config.drive_folder_id:
+            config.drive_folder_id = parsed_folder_id
+            config.save(update_fields=["drive_folder_id", "updated_at"])
+
+    if not config.drive_folder_id:
+        raise ValidationError(
+            "Drive Folder is not configured. Please provide a Drive folder URL in the competition settings."
+        )
+
     pages = list(batch_delivery_pages(batch))
     processed_pages = 0
     failed_pages = 0
-
-    for page in pages:
-        if not page.split_pdf_file:
-            failed_pages += 1
-            continue
+    
+    credentials = _load_service_account_credentials(config, [DRIVE_SCOPE])
+    if credentials is None:
         try:
+            credentials, _ = google.auth.default(scopes=[DRIVE_SCOPE])
+        except google.auth.exceptions.DefaultCredentialsError as exc:
+            raise ValidationError(
+                "Google credentials are not configured. "
+                "Either set GOOGLE_SERVICE_ACCOUNT_JSON in your environment, "
+                "or run: gcloud auth application-default login"
+            ) from exc
+
+    def _upload_page(page: CertificatePage) -> bool:
+        if not page.split_pdf_file:
+            return False
+        try:
+            # Build client inside thread because google-api-python-client is not thread-safe
+            thread_drive = build("drive", "v3", credentials=credentials, cache_discovery=False)
             ensure_public_identity(page)
             if page.drive_file_id and page.drive_file_url:
-                processed_pages += 1
-                continue
+                return True
             metadata = {
                 "name": page.output_filename or page.split_pdf_file.name.rsplit("/", 1)[-1],
                 "parents": [config.drive_folder_id],
             }
             media = MediaFileUpload(page.split_pdf_file.path, mimetype="application/pdf", resumable=False)
-            response = drive.files().create(body=metadata, media_body=media, fields="id").execute()
+            response = thread_drive.files().create(body=metadata, media_body=media, fields="id").execute()
             file_id = response["id"]
-            drive.permissions().create(fileId=file_id, body={"role": "reader", "type": "anyone"}).execute()
+            thread_drive.permissions().create(fileId=file_id, body={"role": "reader", "type": "anyone"}).execute()
             page.drive_file_id = file_id
             page.drive_file_url = f"https://drive.google.com/file/d/{file_id}/view"
             page.save(update_fields=["drive_file_id", "drive_file_url", "updated_at"])
-            processed_pages += 1
+            return True
         except Exception:
-            failed_pages += 1
+            logger.exception("Failed to upload page %s to Drive", page.id)
+            return False
+
+    with ThreadPoolExecutor(max_workers=5) as executor:
+        futures = {executor.submit(_upload_page, page): page for page in pages}
+        for future in as_completed(futures):
+            if future.result():
+                processed_pages += 1
+            else:
+                failed_pages += 1
 
     config.is_drive_connected = True
     config.last_drive_check_at = timezone.now()

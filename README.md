@@ -1,68 +1,58 @@
 # CertificationFlow
 
-Monorepo for a certificate processing system with:
-
-- `backend/`: Django + DRF + Celery + PDF/OCR pipeline
-- `frontend/`: React/Vite operator console based on the provided UI bundle
-
-## What Works
-
-- Competition records stored in the database
-- Excel/CSV import into the database
-- Google Sheets sync scaffolding using service-account credentials stored per competition
-- Source PDF upload
-- Competition-name inference from PDF
-- User confirmation of inferred competition
-- One-page-per-certificate PDF splitting
-- Direct text extraction with OCR fallback code path
-- Initial certificate-to-student matching
-- Real API-backed dashboard, competition, student, certificate, review, logs, drive-status, email-readiness, and settings screens
-
-## Project Layout
-
-```text
-backend/   Django backend
-frontend/  React frontend
-docs/      Design spec and implementation plan
-media/     Uploaded files and generated certificate pages
-```
-
-## Backend Setup
+## Chạy local
 
 ```powershell
+# Backend
 python -m venv .venv
 .\.venv\Scripts\python -m pip install -r backend\requirements.txt
 Copy-Item backend\.env.example backend\.env
 .\.venv\Scripts\python backend\manage.py migrate
 .\.venv\Scripts\python backend\manage.py runserver
-```
 
-Default local mode uses SQLite and eager Celery execution so the API works without Redis.
-
-## Frontend Setup
-
-```powershell
-Copy-Item frontend\.env.example frontend\.env
+# Frontend (tab mới)
 cd frontend
 npm install
 npm run dev
 ```
 
-The default API base URL is `http://localhost:8000/api`.
+Mở `http://localhost:5173`.
 
-## Optional PostgreSQL + Redis
+## Google Drive (local)
+
+```bash
+gcloud auth application-default login
+```
+
+Đăng nhập tài khoản Google cá nhân. Không cần cấu hình thêm — backend tự dùng tài khoản đó để upload.
+
+> Chưa có gcloud? Tải tại https://cloud.google.com/sdk/docs/install
+
+## Deploy (production)
+
+Thêm vào `backend/.env`:
+
+```env
+DATABASE_URL=postgres://user:pass@host:5432/db
+CELERY_BROKER_URL=redis://host:6379/0
+CELERY_RESULT_BACKEND=redis://host:6379/0
+GOOGLE_SERVICE_ACCOUNT_JSON={"type":"service_account",...}   # thay vì ADC
+SECRET_KEY=...
+ALLOWED_HOSTS=yourdomain.com
+```
+
+Tạo service account trên [Google Cloud Console](https://console.cloud.google.com) → download JSON key → share folder Drive với email service account (Editor).
 
 ```powershell
 docker compose up -d postgres redis
+.\.venv\Scripts\python backend\manage.py migrate
+.\.venv\Scripts\python backend\manage.py collectstatic
 ```
 
-Then set `DATABASE_URL`, `CELERY_BROKER_URL`, and `CELERY_RESULT_BACKEND` in `backend/.env`.
+## Sử dụng Drive Export
 
-## Verification
-
-```powershell
-.\.venv\Scripts\python backend\manage.py check
-.\.venv\Scripts\python backend\manage.py test apps.data_imports apps.certificates
-cd frontend
-npm run build
-```
+1. Import danh sách học sinh (Excel/CSV)
+2. Upload PDF chứng nhận → xác nhận cuộc thi
+3. Match Review → duyệt từng trang
+4. Export Certificates → paste link folder Drive → **Save Folder** → **Upload to Drive**
+5. **Prepare Excel Export** → chọn cột → tải về (cột Drive Link có sẵn mặc định)

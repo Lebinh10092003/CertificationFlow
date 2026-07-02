@@ -5,6 +5,7 @@ import type {
   Competition,
   BulkReviewResponse,
   DashboardSummary,
+  DriveUploadSummary,
   ExportColumnInspection,
   ExportColumnOption,
   ImportExecutionPayload,
@@ -261,12 +262,30 @@ export const api = {
     payload: { batch_ids: number[]; columns: ExportColumnOption[]; sheet_mode: string; format_mode: string },
   ) =>
     submitDownload(`/competitions/${competitionId}/certificate-export/`, payload),
-  fetchPages: (competitionId?: number, batchId?: number, batchIds?: number[]) =>
-    request<CertificatePage[]>(`/certificate-pages/${buildQuery({
+  fetchPages: async (competitionId?: number, batchId?: number, batchIds?: number[]) => {
+    let url: string | null = `/certificate-pages/${buildQuery({
       competition: competitionId,
       batch: batchId,
       batch_ids: batchIds?.join(","),
-    })}`),
+    })}`;
+    const allResults: CertificatePage[] = [];
+    while (url) {
+      const response = await request<{ next: string | null; results: CertificatePage[] }>(url);
+      if (Array.isArray(response)) {
+        // Fallback if pagination is turned off
+        return response as CertificatePage[];
+      }
+      allResults.push(...response.results);
+      if (response.next) {
+        // Extract just the path from the absolute URL returned by DRF
+        const urlObj = new URL(response.next);
+        url = urlObj.pathname + urlObj.search;
+      } else {
+        url = null;
+      }
+    }
+    return allResults;
+  },
   updatePage: (pageId: number, payload: Record<string, unknown>) =>
     request<CertificatePage>(`/certificate-pages/${pageId}/`, {
       method: "PATCH",
@@ -287,4 +306,15 @@ export const api = {
     request<PublicCertificate>(`/public-certificates/${slug}/`),
   fetchLogs: (competitionId?: number) =>
     request<AuditLog[]>(`/logs/${competitionId ? `?competition=${competitionId}` : ""}`),
+  saveDriveFolder: (competitionId: number, driveFolderUrl: string) =>
+    request<{ drive_folder_url: string; drive_folder_id: string }>(
+      `/competitions/${competitionId}/drive-folder/`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ drive_folder_url: driveFolderUrl }),
+      },
+    ),
+  uploadBatchToDrive: (batchId: number) =>
+    request<DriveUploadSummary>(`/certificate-batches/${batchId}/upload-drive/`, { method: "POST" }),
 };

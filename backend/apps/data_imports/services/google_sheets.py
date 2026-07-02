@@ -4,6 +4,7 @@ import json
 
 from django.conf import settings
 from django.utils import timezone
+import google.auth
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 
@@ -17,15 +18,25 @@ from .tabular import import_rows
 def fetch_google_sheet_rows(config: IntegrationConfig) -> list[dict]:
     if not config.sheets_spreadsheet_id or not config.sheets_worksheet_name:
         raise ValueError("Google Sheets integration is not configured")
-    credentials_payload = config.sheets_credentials_json or settings.GOOGLE_SERVICE_ACCOUNT_JSON
-    if not credentials_payload:
-        raise ValueError("Missing Google service account credentials")
 
-    credentials_info = json.loads(credentials_payload)
-    credentials = service_account.Credentials.from_service_account_info(
-        credentials_info,
-        scopes=["https://www.googleapis.com/auth/spreadsheets.readonly"],
-    )
+    credentials_payload = config.sheets_credentials_json or settings.GOOGLE_SERVICE_ACCOUNT_JSON
+    scopes = ["https://www.googleapis.com/auth/spreadsheets.readonly"]
+    if credentials_payload:
+        credentials_info = json.loads(credentials_payload)
+        credentials = service_account.Credentials.from_service_account_info(
+            credentials_info,
+            scopes=scopes,
+        )
+    else:
+        try:
+            credentials, _ = google.auth.default(scopes=scopes)
+        except google.auth.exceptions.DefaultCredentialsError as exc:
+            raise ValueError(
+                "Google credentials are not configured. "
+                "Either set GOOGLE_SERVICE_ACCOUNT_JSON in your environment, "
+                "or run: gcloud auth application-default login"
+            ) from exc
+
     service = build("sheets", "v4", credentials=credentials, cache_discovery=False)
     result = (
         service.spreadsheets()
@@ -46,8 +57,8 @@ def fetch_google_sheet_rows(config: IntegrationConfig) -> list[dict]:
 def validate_google_sheet_config(config: IntegrationConfig):
     if not config.sheets_spreadsheet_id or not config.sheets_worksheet_name:
         raise ValueError("Google Sheets integration is not configured")
-    if not (config.sheets_credentials_json or settings.GOOGLE_SERVICE_ACCOUNT_JSON):
-        raise ValueError("Missing Google service account credentials")
+    # Credentials are valid if service account JSON is set, or if ADC is available on the machine
+    # (gcloud auth application-default login). We don't eagerly validate ADC here.
 
 
 def sync_google_sheet(job: DataImportJob):

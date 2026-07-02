@@ -5,7 +5,7 @@ import fitz
 from django.contrib.auth import get_user_model
 from django.core.files.base import ContentFile
 from django.core.files.uploadedfile import SimpleUploadedFile
-from django.test import TestCase
+from django.test import TestCase, TransactionTestCase
 from openpyxl import load_workbook
 from rest_framework.test import APIClient
 
@@ -465,7 +465,7 @@ class CertificateDeliveryTests(TestCase):
         payload = response.json()
         self.assertTrue(any(column["key"] == "Candidate's Name" for column in payload["source_columns"]))
         self.assertTrue(any(column["key"] == "public_link" for column in payload["system_columns"]))
-        self.assertFalse(any(column["key"] == "drive_link" for column in payload["system_columns"]))
+        self.assertTrue(any(column["key"] == "drive_link" for column in payload["system_columns"]))
 
     def test_configurable_export_endpoint_respects_column_order_and_labels(self):
         ensure_public_identity(self.page)
@@ -674,7 +674,7 @@ class CertificateDeliveryTests(TestCase):
         )
 
         self.assertEqual(response.status_code, 200)
-        payload = response.json()[0]
+        payload = response.json()["results"][0]
         self.assertTrue(payload["split_pdf_url"].endswith(f"/api/certificate-pages/{self.page.id}/pdf/"))
         self.assertTrue(payload["download_pdf_url"].endswith(f"/api/certificate-pages/{self.page.id}/pdf/?download=1"))
 
@@ -697,7 +697,7 @@ class CertificateDeliveryTests(TestCase):
         )
 
         self.assertEqual(response.status_code, 200)
-        payload = response.json()[0]
+        payload = response.json()["results"][0]
         self.assertEqual(payload["review_status"], "needs_review")
         self.assertFalse(payload["export_ready"])
 
@@ -712,3 +712,440 @@ class CertificateDeliveryTests(TestCase):
         self.assertEqual(Participant.objects.count(), 1)
         self.assertEqual(CompetitionEnrollment.objects.count(), 1)
         self.assertEqual(CompetitionResult.objects.count(), 1)
+
+
+class DriveFolderParsingTests(TestCase):
+    """Tests for parse_drive_folder_id helper."""
+
+    def _parse(self, value):
+        from apps.certificates.services.delivery import parse_drive_folder_id
+        return parse_drive_folder_id(value)
+
+    def test_parses_standard_folders_url(self):
+        folder_id = self._parse("https://drive.google.com/drive/folders/folder123abc")
+        self.assertEqual(folder_id, "folder123abc")
+
+    def test_parses_u0_folders_url(self):
+        folder_id = self._parse("https://drive.google.com/drive/u/0/folders/folder456xyz")
+        self.assertEqual(folder_id, "folder456xyz")
+
+    def test_parses_open_id_url(self):
+        folder_id = self._parse("https://drive.google.com/open?id=folderOpenId789")
+        self.assertEqual(folder_id, "folderOpenId789")
+
+    def test_parses_bare_folder_id(self):
+        folder_id = self._parse("bareAlphanumericId_-")
+        self.assertEqual(folder_id, "bareAlphanumericId_-")
+
+    def test_raises_for_empty_value(self):
+        from django.core.exceptions import ValidationError
+        with self.assertRaises(ValidationError):
+            self._parse("")
+
+    def test_raises_for_blank_value(self):
+        from django.core.exceptions import ValidationError
+        with self.assertRaises(ValidationError):
+            self._parse("   ")
+
+    def test_raises_for_invalid_url(self):
+        from django.core.exceptions import ValidationError
+        with self.assertRaises(ValidationError):
+            self._parse("https://drive.google.com/invalid-path")
+
+    def test_raises_for_invalid_bare_value(self):
+        from django.core.exceptions import ValidationError
+        with self.assertRaises(ValidationError):
+            self._parse("not a valid id with spaces!")
+
+
+class DriveDeliveryTests(TransactionTestCase):
+    """Tests for deliver_batch_to_drive service with mocked Drive API."""
+
+    def setUp(self):
+        self.competition = Competition.objects.create(name="Drive Test", academic_year="2026")
+        self.config = IntegrationConfig.objects.create(
+            competition=self.competition,
+            drive_folder_url="https://drive.google.com/drive/folders/testFolder123",
+        )
+        participant = Participant.objects.create(
+            external_student_id="D001",
+            full_name="Drive Student",
+            normalized_name="drive student",
+            email="drive@example.com",
+            school_name="Test School",
+            normalized_school_name="test school",
+            grade="5",
+        )
+        enrollment = CompetitionEnrollment.objects.create(
+            competition=self.competition,
+            participant=participant,
+            source_row_number=1,
+            subject="Math",
+        )
+        result = CompetitionResult.objects.create(
+            competition_enrollment=enrollment,
+            award="Gold",
+            certificate_code="MATH-G-D001",
+        )
+        self.batch = SourcePdfBatch.objects.create(
+            competition=self.competition,
+            original_filename="drive_test.pdf",
+            confirmed_competition_name=self.competition.name,
+            competition_confirmation_status=SourcePdfBatch.ConfirmationStatus.CONFIRMED,
+            status=SourcePdfBatch.Status.READY,
+            processing_mode=SourcePdfBatch.ProcessingMode.SPLIT_EXTRACT_MATCH,
+        )
+        self.page = CertificatePage.objects.create(
+            source_batch=self.batch,
+            page_number=1,
+        )
+        self.page.split_pdf_file.save("test_page.pdf", ContentFile(b"%PDF-1.4 test"), save=True)
+        extraction = CertificateExtraction.objects.create(
+            certificate_page=self.page,
+            student_name="Drive Student",
+            normalized_student_name="drive student",
+            school_name="Test School",
+            normalized_school_name="test school",
+            grade="5",
+            award="Gold",
+            subject="Math",
+            certificate_code="MATH-G-D001",
+        )
+        CertificateMatch.objects.create(
+            certificate_page=self.page,
+            competition_enrollment=enrollment,
+            competition_result=result,
+            confidence_score=100,
+            confidence_label=CertificateMatch.ConfidenceLabel.HIGH,
+            matched_by=CertificateMatch.MatchedBy.CERTIFICATE_CODE,
+            requires_review=False,
+            is_approved=True,
+            rationale="Exact code",
+        )
+
+    @patch("apps.certificates.services.delivery.google.auth.default")
+    @patch("apps.certificates.services.delivery.build")
+    def test_deliver_batch_to_drive_parses_and_persists_folder_id(self, mock_build, mock_auth_default):
+        mock_auth_default.return_value = (None, None)
+        mock_drive = mock_build.return_value
+        mock_drive.files.return_value.create.return_value.execute.return_value = {"id": "newFileId123"}
+        mock_drive.permissions.return_value.create.return_value.execute.return_value = {}
+
+        from apps.certificates.services.delivery import deliver_batch_to_drive
+        deliver_batch_to_drive(self.batch)
+
+        self.config.refresh_from_db()
+        self.assertEqual(self.config.drive_folder_id, "testFolder123")
+
+    @patch("apps.certificates.services.delivery.google.auth.default")
+    @patch("apps.certificates.services.delivery.build")
+    def test_deliver_batch_to_drive_uploads_and_sets_anyone_reader(self, mock_build, mock_auth_default):
+        mock_auth_default.return_value = (None, None)
+        mock_drive = mock_build.return_value
+        mock_create = mock_drive.files.return_value.create.return_value
+        mock_create.execute.return_value = {"id": "uploadedFileId"}
+        mock_drive.permissions.return_value.create.return_value.execute.return_value = {}
+
+        from apps.certificates.services.delivery import deliver_batch_to_drive
+        summary = deliver_batch_to_drive(self.batch)
+
+        self.assertEqual(summary.total_pages, 1)
+        self.assertEqual(summary.processed_pages, 1)
+        self.assertEqual(summary.failed_pages, 0)
+
+        # Check file was created with correct folder parent
+        call_kwargs = mock_drive.files.return_value.create.call_args
+        self.assertIn("testFolder123", str(call_kwargs))
+
+        # Check permission was set to anyone reader
+        perm_call = mock_drive.permissions.return_value.create.call_args
+        self.assertIn("reader", str(perm_call))
+        self.assertIn("anyone", str(perm_call))
+
+        self.page.refresh_from_db()
+        self.assertEqual(self.page.drive_file_id, "uploadedFileId")
+        self.assertEqual(self.page.drive_file_url, "https://drive.google.com/file/d/uploadedFileId/view")
+
+    @patch("apps.certificates.services.delivery.google.auth.default")
+    @patch("apps.certificates.services.delivery.build")
+    def test_deliver_batch_to_drive_skips_already_uploaded_pages(self, mock_build, mock_auth_default):
+        mock_auth_default.return_value = (None, None)
+        self.page.drive_file_id = "existingFileId"
+        self.page.drive_file_url = "https://drive.google.com/file/d/existingFileId/view"
+        self.page.save(update_fields=["drive_file_id", "drive_file_url", "updated_at"])
+
+        from apps.certificates.services.delivery import deliver_batch_to_drive
+        summary = deliver_batch_to_drive(self.batch)
+
+        self.assertEqual(summary.processed_pages, 1)
+        self.assertEqual(summary.failed_pages, 0)
+        mock_build.return_value.files.return_value.create.assert_not_called()
+
+    def test_deliver_batch_to_drive_raises_without_folder_config(self):
+        from django.core.exceptions import ValidationError
+        from apps.certificates.services.delivery import deliver_batch_to_drive
+        self.config.drive_folder_url = ""
+        self.config.drive_folder_id = ""
+        self.config.save()
+
+        with self.assertRaises(ValidationError):
+            deliver_batch_to_drive(self.batch)
+
+
+class CertificateDeliveryApiTests(TestCase):
+    """API endpoint tests for Drive folder save and Drive upload endpoints."""
+
+    def setUp(self):
+        from django.contrib.auth import get_user_model
+        User = get_user_model()
+        self.client = APIClient()
+        user = User.objects.create_user(username="drivetest", password="drivepass")
+        self.client.force_authenticate(user=user)
+
+        self.competition = Competition.objects.create(name="API Drive Test", academic_year="2026")
+        self.config = IntegrationConfig.objects.create(competition=self.competition)
+        self.batch = SourcePdfBatch.objects.create(
+            competition=self.competition,
+            original_filename="api_drive.pdf",
+            confirmed_competition_name=self.competition.name,
+            competition_confirmation_status=SourcePdfBatch.ConfirmationStatus.CONFIRMED,
+            status=SourcePdfBatch.Status.READY,
+            processing_mode=SourcePdfBatch.ProcessingMode.SPLIT_EXTRACT_MATCH,
+        )
+
+    def test_drive_folder_endpoint_saves_url_and_parsed_id(self):
+        response = self.client.post(
+            f"/api/competitions/{self.competition.id}/drive-folder/",
+            {"drive_folder_url": "https://drive.google.com/drive/folders/savedFolder99"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["drive_folder_url"], "https://drive.google.com/drive/folders/savedFolder99")
+        self.assertEqual(payload["drive_folder_id"], "savedFolder99")
+        self.config.refresh_from_db()
+        self.assertEqual(self.config.drive_folder_id, "savedFolder99")
+
+    def test_drive_folder_endpoint_rejects_missing_url(self):
+        response = self.client.post(
+            f"/api/competitions/{self.competition.id}/drive-folder/",
+            {},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 400)
+
+    def test_drive_folder_endpoint_rejects_invalid_url(self):
+        response = self.client.post(
+            f"/api/competitions/{self.competition.id}/drive-folder/",
+            {"drive_folder_url": "https://drive.google.com/invalid-path-here"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 400)
+
+    def test_upload_drive_endpoint_rejects_missing_drive_folder(self):
+        response = self.client.post(f"/api/certificate-batches/{self.batch.id}/upload-drive/")
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("folder", response.json()["detail"].lower())
+
+    @patch("apps.certificates.views.deliver_batch_to_drive")
+    def test_upload_drive_endpoint_calls_delivery_service(self, mock_deliver):
+        from apps.certificates.services.delivery import BatchDeliverySummary
+        mock_deliver.return_value = BatchDeliverySummary(total_pages=3, processed_pages=3, failed_pages=0)
+        self.config.drive_folder_url = "https://drive.google.com/drive/folders/testFolderXYZ"
+        self.config.drive_folder_id = "testFolderXYZ"
+        self.config.save()
+
+        response = self.client.post(f"/api/certificate-batches/{self.batch.id}/upload-drive/")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["total_pages"], 3)
+        self.assertEqual(payload["processed_pages"], 3)
+        self.assertEqual(payload["failed_pages"], 0)
+        mock_deliver.assert_called_once()
+
+
+class DriveExportColumnTests(TestCase):
+    """Tests ensuring drive_link appears in export columns and workbook output."""
+
+    def setUp(self):
+        self.competition = Competition.objects.create(name="Drive Export Test", academic_year="2026")
+        IntegrationConfig.objects.create(competition=self.competition)
+        participant = Participant.objects.create(
+            external_student_id="DEX001",
+            full_name="Export Drive User",
+            normalized_name="export drive user",
+            email="dex@example.com",
+            school_name="Export School",
+            normalized_school_name="export school",
+            grade="7",
+        )
+        enrollment = CompetitionEnrollment.objects.create(
+            competition=self.competition,
+            participant=participant,
+            source_row_number=1,
+            subject="Science",
+        )
+        result = CompetitionResult.objects.create(
+            competition_enrollment=enrollment,
+            award="Silver",
+            certificate_code="SCI-S-001",
+        )
+        self.batch = SourcePdfBatch.objects.create(
+            competition=self.competition,
+            original_filename="export_drive.pdf",
+            confirmed_competition_name=self.competition.name,
+            competition_confirmation_status=SourcePdfBatch.ConfirmationStatus.CONFIRMED,
+            status=SourcePdfBatch.Status.READY,
+            processing_mode=SourcePdfBatch.ProcessingMode.SPLIT_EXTRACT_MATCH,
+        )
+        self.page = CertificatePage.objects.create(
+            source_batch=self.batch,
+            page_number=1,
+            drive_file_id="driveFileIdExport",
+            drive_file_url="https://drive.google.com/file/d/driveFileIdExport/view",
+        )
+        self.page.split_pdf_file.save("export_page.pdf", ContentFile(b"%PDF-1.4 export"), save=True)
+        CertificateExtraction.objects.create(
+            certificate_page=self.page,
+            student_name="Export Drive User",
+            normalized_student_name="export drive user",
+            school_name="Export School",
+            normalized_school_name="export school",
+            grade="7",
+            award="Silver",
+            subject="Science",
+            certificate_code="SCI-S-001",
+        )
+        CertificateMatch.objects.create(
+            certificate_page=self.page,
+            competition_enrollment=enrollment,
+            competition_result=result,
+            confidence_score=100,
+            confidence_label=CertificateMatch.ConfidenceLabel.HIGH,
+            matched_by=CertificateMatch.MatchedBy.CERTIFICATE_CODE,
+            requires_review=False,
+            is_approved=True,
+            rationale="Exact code",
+        )
+        ensure_public_identity(self.page)
+
+    def test_get_batch_export_columns_includes_drive_link(self):
+        from apps.certificates.services.exporting import get_batch_export_columns
+        columns = get_batch_export_columns(self.batch)
+        system_keys = [col["key"] for col in columns["system_columns"]]
+        self.assertIn("drive_link", system_keys)
+
+    def test_default_export_columns_include_drive_link(self):
+        from apps.certificates.services.exporting import get_batch_export_columns
+        columns = get_batch_export_columns(self.batch)
+        default_keys = [col["key"] for col in columns["default_columns"]]
+        self.assertIn("drive_link", default_keys)
+
+    def test_export_workbook_writes_drive_link_column(self):
+        workbook_bytes = build_batch_export_workbook(self.batch)[1]
+        workbook = load_workbook(BytesIO(workbook_bytes))
+        sheet = workbook[workbook.sheetnames[0]]
+        headers = [sheet.cell(row=1, column=i).value for i in range(1, sheet.max_column + 1)]
+        self.assertIn("Drive Link", headers)
+        drive_col = headers.index("Drive Link") + 1
+        cell_value = sheet.cell(row=2, column=drive_col).value
+        self.assertEqual(cell_value, "https://drive.google.com/file/d/driveFileIdExport/view")
+
+
+class DriveSerializerFieldTests(TestCase):
+    """Tests ensuring drive_file_url and drive_ready are exposed in CertificatePageSerializer."""
+
+    def setUp(self):
+        from django.contrib.auth import get_user_model
+        User = get_user_model()
+        self.client = APIClient()
+        user = User.objects.create_user(username="sertest", password="serpass")
+        self.client.force_authenticate(user=user)
+
+        self.competition = Competition.objects.create(name="Serializer Drive Test", academic_year="2026")
+        IntegrationConfig.objects.create(competition=self.competition)
+        participant = Participant.objects.create(
+            external_student_id="SER001",
+            full_name="Serializer Student",
+            normalized_name="serializer student",
+            email="ser@example.com",
+            school_name="Ser School",
+            normalized_school_name="ser school",
+            grade="9",
+        )
+        enrollment = CompetitionEnrollment.objects.create(
+            competition=self.competition,
+            participant=participant,
+            source_row_number=1,
+            subject="Physics",
+        )
+        result = CompetitionResult.objects.create(
+            competition_enrollment=enrollment,
+            award="Bronze",
+            certificate_code="PHY-B-001",
+        )
+        self.batch = SourcePdfBatch.objects.create(
+            competition=self.competition,
+            original_filename="ser_test.pdf",
+            confirmed_competition_name=self.competition.name,
+            competition_confirmation_status=SourcePdfBatch.ConfirmationStatus.CONFIRMED,
+            status=SourcePdfBatch.Status.READY,
+            processing_mode=SourcePdfBatch.ProcessingMode.SPLIT_EXTRACT_MATCH,
+        )
+        self.page = CertificatePage.objects.create(
+            source_batch=self.batch,
+            page_number=1,
+        )
+        self.page.split_pdf_file.save("ser_page.pdf", ContentFile(b"%PDF-1.4 ser"), save=True)
+        CertificateExtraction.objects.create(
+            certificate_page=self.page,
+            student_name="Serializer Student",
+            normalized_student_name="serializer student",
+            school_name="Ser School",
+            normalized_school_name="ser school",
+            grade="9",
+            award="Bronze",
+            subject="Physics",
+            certificate_code="PHY-B-001",
+        )
+        self.match = CertificateMatch.objects.create(
+            certificate_page=self.page,
+            competition_enrollment=enrollment,
+            competition_result=result,
+            confidence_score=100,
+            confidence_label=CertificateMatch.ConfidenceLabel.HIGH,
+            matched_by=CertificateMatch.MatchedBy.CERTIFICATE_CODE,
+            requires_review=False,
+            is_approved=True,
+            rationale="Exact code",
+        )
+
+    def test_serializer_exposes_drive_file_url_and_drive_ready(self):
+        self.page.drive_file_id = "someFileId"
+        self.page.drive_file_url = "https://drive.google.com/file/d/someFileId/view"
+        self.page.save(update_fields=["drive_file_id", "drive_file_url", "updated_at"])
+
+        response = self.client.get(f"/api/certificate-pages/{self.page.id}/")
+        payload = response.json()
+        self.assertEqual(payload["drive_file_url"], "https://drive.google.com/file/d/someFileId/view")
+        self.assertTrue(payload["drive_ready"])
+
+    def test_approved_page_without_drive_url_is_not_drive_ready(self):
+        response = self.client.get(f"/api/certificate-pages/{self.page.id}/")
+        payload = response.json()
+        self.assertFalse(payload["drive_ready"])
+
+    def test_unapproved_page_does_not_auto_generate_public_url(self):
+        self.match.is_approved = False
+        self.match.save(update_fields=["is_approved", "updated_at"])
+        # page has no public_url set yet
+        self.page.public_url = ""
+        self.page.save(update_fields=["public_url", "updated_at"])
+
+        response = self.client.get(f"/api/certificate-pages/{self.page.id}/")
+        payload = response.json()
+        # Should return empty string, not auto-generate a slug for unapproved pages
+        self.assertEqual(payload["public_url"], "")
+

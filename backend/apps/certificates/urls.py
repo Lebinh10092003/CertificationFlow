@@ -4,6 +4,7 @@ from .views import (
     CertificateMatchApproveView,
     CertificateMatchBulkReviewView,
     CertificateMatchListView,
+    CompetitionDriveFolderView,
     CompetitionExportColumnsView,
     CompetitionExportView,
     CertificatePageDetailUpdateView,
@@ -16,6 +17,7 @@ from .views import (
     SourcePdfBatchExportView,
     SourcePdfBatchListCreateView,
     SourcePdfBatchProcessView,
+    SourcePdfBatchUploadDriveView,
 )
 
 
@@ -26,8 +28,10 @@ urlpatterns = [
     path("certificate-batches/<int:batch_id>/process/", SourcePdfBatchProcessView.as_view(), name="batch-process"),
     path("certificate-batches/<int:batch_id>/export-columns/", SourcePdfBatchExportColumnsView.as_view(), name="batch-export-columns"),
     path("certificate-batches/<int:batch_id>/export/", SourcePdfBatchExportView.as_view(), name="batch-export"),
+    path("certificate-batches/<int:batch_id>/upload-drive/", SourcePdfBatchUploadDriveView.as_view(), name="batch-upload-drive"),
     path("competitions/<int:competition_id>/certificate-export-columns/", CompetitionExportColumnsView.as_view(), name="competition-export-columns"),
     path("competitions/<int:competition_id>/certificate-export/", CompetitionExportView.as_view(), name="competition-export"),
+    path("competitions/<int:competition_id>/drive-folder/", CompetitionDriveFolderView.as_view(), name="competition-drive-folder"),
     path("certificate-pages/", CertificatePageListView.as_view(), name="certificate-page-list"),
     path("certificate-pages/<int:page_id>/pdf/", CertificatePagePdfView.as_view(), name="certificate-page-pdf"),
     path("certificate-pages/<int:pk>/", CertificatePageDetailUpdateView.as_view(), name="certificate-page-detail"),

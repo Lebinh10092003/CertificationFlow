@@ -36,6 +36,7 @@ FORMAT_MODE_COMPACT = "compact"
 FORMAT_MODE_PRESENTATION = "presentation"
 
 SYSTEM_EXPORT_COLUMNS = [
+    {"key": "drive_link", "label": "Drive Link"},
     {"key": "public_link", "label": "Public Link"},
     {"key": "extracted_name", "label": "Extracted Name"},
     {"key": "extracted_school", "label": "Extracted School"},
@@ -63,8 +64,8 @@ THIN_BORDER = Border(
 )
 ZEBRA_FILL = PatternFill("solid", fgColor="F8FBFF")
 CENTER_KEYS = {"grade", "confidence", "page_number", "award", "competition", "qualified_round"}
-LEFT_KEYS = {"matched_student", "matched_email", "extracted_name", "extracted_school", "certificate_code", "public_link", "batch_file"}
-LINK_KEYS = {"public_link"}
+LEFT_KEYS = {"matched_student", "matched_email", "extracted_name", "extracted_school", "certificate_code", "public_link", "drive_link", "batch_file"}
+LINK_KEYS = {"public_link", "drive_link"}
 
 
 def _fallback_source_row(page) -> dict:
@@ -106,6 +107,7 @@ def _system_row(page, request=None) -> dict:
     result = match.competition_result if match else None
     participant = enrollment.participant if enrollment else None
     return {
+        "drive_link": page.drive_file_url or "",
         "public_link": page.public_url,
         "extracted_name": extraction.student_name,
         "extracted_school": extraction.school_name,
@@ -134,7 +136,7 @@ def _default_column_configs(batch: SourcePdfBatch) -> list[dict]:
 
     columns = [*source_columns]
     for system_column in SYSTEM_EXPORT_COLUMNS:
-        if system_column["key"] == "public_link":
+        if system_column["key"] in ("drive_link", "public_link"):
             columns.append({**system_column, "source_type": SOURCE_TYPE_SYSTEM})
     return columns
 
@@ -152,7 +154,7 @@ def _default_column_configs_for_batches(batches: list[SourcePdfBatch]) -> list[d
 
     columns = [*source_columns]
     for system_column in SYSTEM_EXPORT_COLUMNS:
-        if system_column["key"] == "public_link":
+        if system_column["key"] in ("drive_link", "public_link"):
             columns.append({**system_column, "source_type": SOURCE_TYPE_SYSTEM})
     return columns
 

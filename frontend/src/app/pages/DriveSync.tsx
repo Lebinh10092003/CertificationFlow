@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { Download, ExternalLink, Eye } from "lucide-react";
+import { CloudUpload, Download, ExternalLink, Eye, FolderOpen, Save } from "lucide-react";
 
 import { api } from "../../lib/api";
 import type { CertificatePage, SourcePdfBatch } from "../../lib/types";
@@ -8,6 +8,8 @@ import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../components/ui/card";
 import { Checkbox } from "../components/ui/checkbox";
+import { Input } from "../components/ui/input";
+import { Label } from "../components/ui/label";
 import { ScrollArea } from "../components/ui/scroll-area";
 import {
   Table,
@@ -20,13 +22,33 @@ import {
 import { useAppData } from "../contexts/AppDataContext";
 
 export function ExportCertificates() {
-  const { selectedCompetitionId } = useAppData();
+  const { selectedCompetitionId, competitions } = useAppData();
   const [batches, setBatches] = useState<SourcePdfBatch[]>([]);
   const [selectedBatchIds, setSelectedBatchIds] = useState<number[]>([]);
   const [pages, setPages] = useState<CertificatePage[]>([]);
   const [exportBuilderOpen, setExportBuilderOpen] = useState(false);
   const [message, setMessage] = useState("");
   const [errorMessage, setErrorMessage] = useState("");
+
+  // Drive folder state
+  const selectedCompetition = useMemo(
+    () => competitions?.find((c) => c.id === selectedCompetitionId) ?? null,
+    [competitions, selectedCompetitionId],
+  );
+  const [driveFolderUrl, setDriveFolderUrl] = useState("");
+  const [driveFolderSaving, setDriveFolderSaving] = useState(false);
+  const [driveFolderSaved, setDriveFolderSaved] = useState(false);
+
+  // Per-batch upload state
+  const [uploadingBatchIds, setUploadingBatchIds] = useState<Set<number>>(new Set());
+  const [uploadResults, setUploadResults] = useState<Record<number, { processed: number; failed: number; total: number }>>({});
+
+  // Sync drive folder URL from competition config when competition changes
+  useEffect(() => {
+    setDriveFolderUrl(selectedCompetition?.integration_config?.drive_folder_url ?? "");
+    setDriveFolderSaved(false);
+    setUploadResults({});
+  }, [selectedCompetition]);
 
   const loadBatches = async () => {
     if (!selectedCompetitionId) {
@@ -71,6 +93,8 @@ export function ExportCertificates() {
     () => ({
       total: pages.length,
       approved: pages.filter((page) => page.match?.is_approved).length,
+      driveUploaded: pages.filter((page) => !!page.drive_file_url).length,
+      missingDriveLink: pages.filter((page) => page.match?.is_approved && !page.drive_file_url).length,
       publicLinks: pages.filter((page) => !!page.public_url).length,
       exportReady: pages.filter((page) => page.export_ready).length,
       needsApproval: pages.filter((page) => page.review_status !== "approved").length,
@@ -98,6 +122,61 @@ export function ExportCertificates() {
     return `${selectedBatches.length} uploaded files`;
   }, [selectedBatches]);
 
+  const handleSaveDriveFolder = async () => {
+    if (!selectedCompetitionId || !driveFolderUrl.trim()) return;
+    setDriveFolderSaving(true);
+    setMessage("");
+    setErrorMessage("");
+    try {
+      await api.saveDriveFolder(selectedCompetitionId, driveFolderUrl.trim());
+      setDriveFolderSaved(true);
+      setMessage("Drive folder saved successfully.");
+    } catch (err) {
+      setErrorMessage(err instanceof Error ? err.message : "Failed to save Drive folder.");
+    } finally {
+      setDriveFolderSaving(false);
+    }
+  };
+
+  const handleUploadBatchToDrive = async (batchId: number) => {
+    setUploadingBatchIds((prev) => new Set([...prev, batchId]));
+    setMessage("");
+    setErrorMessage("");
+    try {
+      const result = await api.uploadBatchToDrive(batchId);
+      setUploadResults((prev) => ({
+        ...prev,
+        [batchId]: {
+          processed: result.processed_pages,
+          failed: result.failed_pages,
+          total: result.total_pages,
+        },
+      }));
+      if (result.failed_pages === 0) {
+        setMessage(`Upload complete: ${result.processed_pages}/${result.total_pages} certificates uploaded to Drive.`);
+      } else {
+        setErrorMessage(
+          `Upload partial: ${result.processed_pages} uploaded, ${result.failed_pages} failed out of ${result.total_pages} total.`,
+        );
+      }
+      // Reload pages to reflect drive_file_url updates
+      await loadPages(selectedBatchIds);
+    } catch (err) {
+      setErrorMessage(err instanceof Error ? err.message : "Drive upload failed.");
+    } finally {
+      setUploadingBatchIds((prev) => {
+        const next = new Set(prev);
+        next.delete(batchId);
+        return next;
+      });
+    }
+  };
+
+  const hasDriveFolderConfigured = !!(
+    driveFolderSaved ||
+    selectedCompetition?.integration_config?.drive_folder_id
+  );
+
   return (
     <div className="p-8 space-y-6">
       <ExportBuilderDialog
@@ -110,20 +189,75 @@ export function ExportCertificates() {
 
       <div>
         <h1 className="text-3xl font-semibold text-gray-900">Export Certificates</h1>
-        <p className="text-gray-600 mt-1">Download an Excel file containing only approved certificate rows, public certificate links, merged workbook columns, and system columns you choose in the export builder.</p>
+        <p className="text-gray-600 mt-1">
+          Upload approved certificates to Google Drive, then export an Excel file with Drive links for each student.
+          Excel will use Drive links for delivered certificates.
+        </p>
       </div>
 
+      {/* Stats row */}
       <div className="grid grid-cols-4 gap-4">
         <Card><CardContent className="pt-6"><div className="text-2xl font-semibold text-gray-900">{stats.total}</div><p className="mt-1 text-sm text-gray-600">Pages in view</p></CardContent></Card>
         <Card><CardContent className="pt-6"><div className="text-2xl font-semibold text-gray-900">{stats.approved}</div><p className="mt-1 text-sm text-gray-600">Approved pages</p></CardContent></Card>
-        <Card><CardContent className="pt-6"><div className="text-2xl font-semibold text-gray-900">{stats.publicLinks}</div><p className="mt-1 text-sm text-gray-600">Public links ready</p></CardContent></Card>
-        <Card><CardContent className="pt-6"><div className="text-2xl font-semibold text-gray-900">{stats.exportReady}</div><p className="mt-1 text-sm text-gray-600">Ready for export</p></CardContent></Card>
+        <Card><CardContent className="pt-6"><div className="text-2xl font-semibold text-emerald-600">{stats.driveUploaded}</div><p className="mt-1 text-sm text-gray-600">Uploaded to Drive</p></CardContent></Card>
+        <Card><CardContent className="pt-6"><div className={`text-2xl font-semibold ${stats.missingDriveLink > 0 ? "text-amber-600" : "text-gray-900"}`}>{stats.missingDriveLink}</div><p className="mt-1 text-sm text-gray-600">Missing Drive link</p></CardContent></Card>
       </div>
 
+      {/* Drive Folder Configuration */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <FolderOpen className="h-5 w-5 text-blue-600" />
+            Google Drive Folder
+          </CardTitle>
+          <CardDescription>
+            Paste the Google Drive folder URL where approved certificates will be uploaded.
+            The folder must be shared with the backend service account as Editor.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="flex gap-3 items-end">
+            <div className="flex-1 space-y-1">
+              <Label htmlFor="drive-folder-url">Drive Folder URL</Label>
+              <Input
+                id="drive-folder-url"
+                placeholder="https://drive.google.com/drive/folders/your-folder-id"
+                value={driveFolderUrl}
+                onChange={(e) => {
+                  setDriveFolderUrl(e.target.value);
+                  setDriveFolderSaved(false);
+                }}
+                disabled={!selectedCompetitionId}
+              />
+            </div>
+            <Button
+              id="save-drive-folder-btn"
+              onClick={handleSaveDriveFolder}
+              disabled={!selectedCompetitionId || !driveFolderUrl.trim() || driveFolderSaving}
+              className="gap-2"
+            >
+              <Save className="h-4 w-4" />
+              {driveFolderSaving ? "Saving…" : "Save Folder"}
+            </Button>
+          </div>
+
+          {selectedCompetition?.integration_config?.drive_folder_id && (
+            <p className="text-xs text-slate-500">
+              Currently configured folder ID:{" "}
+              <code className="bg-slate-100 px-1 rounded">{selectedCompetition.integration_config.drive_folder_id}</code>
+            </p>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* Batch Selection + Upload */}
       <Card>
         <CardHeader>
           <CardTitle>Export Controls</CardTitle>
-          <CardDescription>Select one or more uploaded PDF files, then click Prepare Excel Export to choose source columns from the merged workbook data plus system columns.</CardDescription>
+          <CardDescription>
+            Select uploaded PDF files, upload approved certificates to Drive, then prepare the Excel export.
+            Excel will use Drive links for delivered certificates.
+          </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
           <div className="space-y-3 rounded-lg border bg-white p-4">
@@ -162,22 +296,45 @@ export function ExportCertificates() {
                 ) : (
                   batches.map((batch) => {
                     const isSelected = selectedBatchIds.includes(batch.id);
+                    const uploadResult = uploadResults[batch.id];
+                    const isUploading = uploadingBatchIds.has(batch.id);
                     return (
-                      <label
+                      <div
                         key={batch.id}
-                        className={`flex cursor-pointer items-start gap-3 rounded-lg border p-3 transition-colors ${isSelected ? "border-blue-300 bg-blue-50" : "border-slate-200 bg-white"}`}
+                        className={`flex items-start gap-3 rounded-lg border p-3 transition-colors ${isSelected ? "border-blue-300 bg-blue-50" : "border-slate-200 bg-white"}`}
                       >
-                        <Checkbox
-                          checked={isSelected}
-                          onCheckedChange={(checked) => toggleBatch(batch.id, Boolean(checked))}
-                        />
-                        <div className="min-w-0 flex-1">
-                          <p className="truncate text-sm font-medium text-slate-900">{batch.original_filename}</p>
-                          <p className="mt-1 text-xs text-slate-600">
-                            {batch.page_total} pages | {batch.status} | {new Date(batch.created_at).toLocaleString()}
-                          </p>
-                        </div>
-                      </label>
+                        <label className="flex items-start gap-3 cursor-pointer flex-1 min-w-0">
+                          <Checkbox
+                            checked={isSelected}
+                            onCheckedChange={(checked) => toggleBatch(batch.id, Boolean(checked))}
+                          />
+                          <div className="min-w-0 flex-1">
+                            <p className="truncate text-sm font-medium text-slate-900">{batch.original_filename}</p>
+                            <p className="mt-1 text-xs text-slate-600">
+                              {batch.page_count} pages | {batch.status} | {new Date(batch.created_at).toLocaleString()}
+                            </p>
+                            {uploadResult && (
+                              <p className="mt-1 text-xs text-emerald-700">
+                                Drive: {uploadResult.processed}/{uploadResult.total} uploaded
+                                {uploadResult.failed > 0 && `, ${uploadResult.failed} failed`}
+                              </p>
+                            )}
+                          </div>
+                        </label>
+                        <Button
+                          id={`upload-drive-batch-${batch.id}`}
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          className="gap-1 shrink-0"
+                          disabled={!hasDriveFolderConfigured || isUploading}
+                          onClick={() => handleUploadBatchToDrive(batch.id)}
+                          title={hasDriveFolderConfigured ? "Upload approved certificates to Drive" : "Save a Drive folder first"}
+                        >
+                          <CloudUpload className="h-4 w-4" />
+                          {isUploading ? "Uploading…" : "Upload to Drive"}
+                        </Button>
+                      </div>
                     );
                   })
                 )}
@@ -202,6 +359,12 @@ export function ExportCertificates() {
               <p>
                 {stats.needsApproval} page(s) still need approval before they can be exported.
               </p>
+              {stats.missingDriveLink > 0 && (
+                <p className="text-amber-700">
+                  {stats.missingDriveLink} approved page(s) have not been uploaded to Drive yet.
+                  Upload them above to include Drive links in the export.
+                </p>
+              )}
             </div>
           ) : null}
 
@@ -210,6 +373,7 @@ export function ExportCertificates() {
         </CardContent>
       </Card>
 
+      {/* Export Readiness Table */}
       <Card>
         <CardHeader>
           <CardTitle>Export Readiness</CardTitle>
@@ -261,6 +425,14 @@ export function ExportCertificates() {
                       </TableCell>
                       <TableCell>
                         <div className="flex gap-2">
+                          {page.drive_file_url ? (
+                            <Button asChild variant="ghost" size="sm" className="gap-1">
+                              <a href={page.drive_file_url} target="_blank" rel="noreferrer">
+                                <CloudUpload className="h-4 w-4" />
+                                Drive
+                              </a>
+                            </Button>
+                          ) : null}
                           {page.public_url ? (
                             <Button asChild variant="ghost" size="sm" className="gap-1">
                               <a href={page.public_url} target="_blank" rel="noreferrer">

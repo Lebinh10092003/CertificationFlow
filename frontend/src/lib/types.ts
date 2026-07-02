@@ -137,7 +137,6 @@ export type SourcePdfBatch = {
   uploaded_file_url: string;
   original_filename: string;
   page_count: number;
-  page_total: number;
   inferred_competition_name: string;
   confirmed_competition_name: string;
   competition_confirmation_status: string;
@@ -190,6 +189,8 @@ export type CertificatePage = {
   review_status: string;
   export_ready: boolean;
   email_status: string;
+  drive_file_url: string;
+  drive_ready: boolean;
   extraction?: CertificateExtraction;
   match?: CertificateMatch;
 };
@@ -247,4 +248,10 @@ export type BulkReviewResponse = {
   match_ids: number[];
   approved: boolean;
   processed_count: number;
+};
+
+export type DriveUploadSummary = {
+  total_pages: number;
+  processed_pages: number;
+  failed_pages: number;
 };

@@ -6,6 +6,7 @@ from django.core.exceptions import ValidationError
 from django.utils import timezone
 from rest_framework import generics, status
 from rest_framework.permissions import AllowAny
+from rest_framework.pagination import PageNumberPagination
 from rest_framework.parsers import FormParser, MultiPartParser
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -25,7 +26,8 @@ from .serializers import (
     PublicCertificateSerializer,
     SourcePdfBatchSerializer,
 )
-from .services.delivery import batch_delivery_pages, delete_source_batch, ensure_public_identity
+from .services.delivery import batch_delivery_pages, delete_source_batch, deliver_batch_to_drive, ensure_public_identity
+from .services.delivery import parse_drive_folder_id
 from .services.exporting import (
     build_batch_export_workbook,
     build_batches_export_workbook,
@@ -241,8 +243,14 @@ class CompetitionExportView(APIView):
         return response
 
 
+class LargeResultsSetPagination(PageNumberPagination):
+    page_size = 500
+    page_size_query_param = 'page_size'
+    max_page_size = 5000
+
 class CertificatePageListView(generics.ListAPIView):
     serializer_class = CertificatePageSerializer
+    pagination_class = LargeResultsSetPagination
 
     def get_queryset(self):
         queryset = CertificatePage.objects.select_related(
@@ -407,3 +415,88 @@ class PublicCertificateDetailView(generics.RetrieveAPIView):
         "match__competition_enrollment__participant",
         "match__competition_result",
     ).filter(match__is_approved=True)
+
+
+class CompetitionDriveFolderView(APIView):
+    """POST /api/competitions/<competition_id>/drive-folder/
+
+    Save and validate the Drive folder URL for a competition.
+    Parses the folder ID from the URL and persists it on IntegrationConfig.
+    """
+
+    def post(self, request, competition_id: int):
+        competition = get_object_or_404(Competition, pk=competition_id)
+        drive_folder_url = (request.data.get("drive_folder_url") or "").strip()
+        if not drive_folder_url:
+            return Response(
+                {"detail": "drive_folder_url is required"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        try:
+            folder_id = parse_drive_folder_id(drive_folder_url)
+        except ValidationError as error:
+            return Response(
+                {"detail": error.message if hasattr(error, 'message') else str(error)},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        config = competition.integration_config
+        config.drive_folder_url = drive_folder_url
+        config.drive_folder_id = folder_id
+        config.save(update_fields=["drive_folder_url", "drive_folder_id", "updated_at"])
+
+        return Response(
+            {
+                "drive_folder_url": config.drive_folder_url,
+                "drive_folder_id": config.drive_folder_id,
+            },
+            status=status.HTTP_200_OK,
+        )
+
+
+class SourcePdfBatchUploadDriveView(APIView):
+    """POST /api/certificate-batches/<batch_id>/upload-drive/
+
+    Upload all approved certificate pages in this batch to the competition's
+    configured Google Drive folder. Returns a summary with total/processed/failed counts.
+    """
+
+    def post(self, request, batch_id: int):
+        batch = get_object_or_404(
+            SourcePdfBatch.objects.select_related("competition", "competition__integration_config"),
+            pk=batch_id,
+        )
+        if not batch.competition_id:
+            return Response(
+                {"detail": "Batch must be attached to a competition before Drive upload"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        config = batch.competition.integration_config
+        if not config.drive_folder_url and not config.drive_folder_id:
+            return Response(
+                {"detail": "Drive folder URL is not configured. Please set it in the competition Drive settings."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            summary = deliver_batch_to_drive(batch)
+        except ValidationError as error:
+            return Response(
+                {"detail": error.message if hasattr(error, 'message') else str(error)},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        except Exception as error:
+            return Response(
+                {"detail": f"Drive upload failed: {error}"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
+        return Response(
+            {
+                "total_pages": summary.total_pages,
+                "processed_pages": summary.processed_pages,
+                "failed_pages": summary.failed_pages,
+            },
+            status=status.HTTP_200_OK,
+        )

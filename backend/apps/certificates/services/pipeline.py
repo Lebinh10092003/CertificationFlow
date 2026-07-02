@@ -18,7 +18,7 @@ from apps.common.text import normalize_text, slugify_filename
 from apps.competitions.models import Competition
 
 from ..models import CertificateExtraction, CertificatePage, SourcePdfBatch
-from .matching import match_certificate_page
+from .matching import match_certificate_page, _candidate_states
 from .parsing import parse_certificate_text, text_is_sparse
 
 
@@ -109,7 +109,6 @@ def _render_output_filename(source_batch: SourcePdfBatch, extraction: Certificat
     return slugify_filename(rendered)
 
 
-@transaction.atomic
 def split_and_process_source_batch(source_batch: SourcePdfBatch):
     source_batch.status = SourcePdfBatch.Status.PROCESSING
     source_batch.started_at = timezone.now()
@@ -117,6 +116,10 @@ def split_and_process_source_batch(source_batch: SourcePdfBatch):
 
     source_batch.pages.all().delete()
     document = fitz.open(source_batch.uploaded_file.path)
+    
+    candidates = None
+    if source_batch.competition:
+        candidates = _candidate_states(source_batch.competition)
 
     for page_index in range(document.page_count):
         source_page = document.load_page(page_index)
@@ -165,7 +168,7 @@ def split_and_process_source_batch(source_batch: SourcePdfBatch):
             SourcePdfBatch.ProcessingMode.SPLIT_EXTRACT_MATCH,
             SourcePdfBatch.ProcessingMode.FULL_PIPELINE,
         }:
-            match = match_certificate_page(certificate_page)
+            match = match_certificate_page(certificate_page, candidate_states=candidates)
             certificate_page.processing_status = (
                 CertificatePage.ProcessingStatus.REVIEW_REQUIRED
                 if match.requires_review

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from django.utils import timezone
 from rapidfuzz import fuzz
 
 from apps.common.text import (
@@ -112,14 +113,16 @@ def _disambiguate_exact_candidates(
     return candidates
 
 
-def match_certificate_page(certificate_page: CertificatePage) -> CertificateMatch:
+def match_certificate_page(certificate_page: CertificatePage, candidate_states: list[CandidateState] | None = None) -> CertificateMatch:
     competition = certificate_page.source_batch.competition
     extraction: CertificateExtraction = certificate_page.extraction
 
     if not competition:
         return _save_match(certificate_page, _match_defaults())
 
-    candidate_states = _candidate_states(competition)
+    if candidate_states is None:
+        candidate_states = _candidate_states(competition)
+        
     if not candidate_states:
         return _save_match(certificate_page, _match_defaults())
 
@@ -247,21 +250,24 @@ def match_certificate_page(certificate_page: CertificatePage) -> CertificateMatc
 
 
 def rematch_competition_pages(competition: Competition) -> int:
-    pages = (
+    pages = list(
         CertificatePage.objects.select_related("extraction", "match", "source_batch__competition")
         .filter(source_batch__competition=competition, extraction__isnull=False)
         .exclude(match__is_approved=True)
     )
 
-    rematched_count = 0
+    if not pages:
+        return 0
+
+    candidate_states = _candidate_states(competition)
     for page in pages:
-        match = match_certificate_page(page)
+        match = match_certificate_page(page, candidate_states=candidate_states)
         page.processing_status = (
             CertificatePage.ProcessingStatus.REVIEW_REQUIRED
             if match.requires_review
             else CertificatePage.ProcessingStatus.MATCHED
         )
-        page.save(update_fields=["processing_status", "updated_at"])
-        rematched_count += 1
+        page.updated_at = timezone.now()
 
-    return rematched_count
+    CertificatePage.objects.bulk_update(pages, ["processing_status", "updated_at"])
+    return len(pages)
